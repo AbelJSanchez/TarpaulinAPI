@@ -20,15 +20,13 @@ oauth = OAuth(app)
 GURL = "https://assignment-6-tarpaulin-479819.wl.r.appspot.com"
 
 auth0 = oauth.register(
-    'auth0',
+    "auth0",
     client_id=CLIENT_ID,
     client_secret=CLIENT_SECRET,
-    api_base_url=f'https://{DOMAIN}',
-    access_token_url=f'https://{DOMAIN}/oauth/token',
-    authorize_url=f'https://{DOMAIN}/authorize',
-    client_kwargs={
-        'scope': 'openid profile email'
-    }
+    api_base_url=f"https://{DOMAIN}",
+    access_token_url=f"https://{DOMAIN}/oauth/token",
+    authorize_url=f"https://{DOMAIN}/authorize",
+    client_kwargs={"scope": "openid profile email"},
 )
 
 # Required Fields
@@ -43,56 +41,57 @@ class AuthError(Exception):
 
 @app.errorhandler(AuthError)
 def handle_auth_error(ex):
-    """ Handle the AuthError by returning a JSON response to the client. """
+    """Handle the AuthError by returning a JSON response to the client."""
     response = jsonify(ex.error)
     response.status_code = ex.status_code
     return response
 
 
 def get_token_from_auth_header(request) -> str:
-    """ Retrieve the JWT from the authorization header. """
-    if 'Authorization' in request.headers:
-        auth_header = request.headers['Authorization'].split()
+    """Retrieve the JWT from the authorization header."""
+    if "Authorization" in request.headers:
+        auth_header = request.headers["Authorization"].split()
         token = auth_header[1]
     else:
         raise AuthError(
             {
                 "code": "no_auth_header",
-                "description": "Authorization header is missing"},
-            401
+                "description": "Authorization header is missing",
+            },
+            401,
         )
 
     return token
 
 
 def verify_token_signature(token: str) -> dict[str, Any]:
-    """ Verify that the client contains an RS256 signed JWT. """
+    """Verify that the client contains an RS256 signed JWT."""
     try:
         unverified_header = jwt.get_unverified_header(token)
     except jwt.JWTError:
         raise AuthError(
             {
                 "code": "invalid_header",
-                "description": "Invalid header. Use an RS256 signed JWT Access Token"},
-            401
+                "description": "Invalid header. Use an RS256 signed JWT Access Token",
+            },
+            401,
         )
 
     if unverified_header["alg"] == "HS256":
         raise AuthError(
             {
                 "code": "invalid_header",
-                "description": "Invalid header. Use an RS256 signed JWT Access Token"},
-            401
+                "description": "Invalid header. Use an RS256 signed JWT Access Token",
+            },
+            401,
         )
 
     return unverified_header
 
 
 def build_rsa_key(unverified_header: dict[str, Any]) -> dict[str, Any]:
-    """ Retrieve the RSA key from the JWKS endpoint. """
-    jsonurl = urlopen(
-        "https://" + DOMAIN + "/.well-known/jwks.json"
-    )
+    """Retrieve the RSA key from the JWKS endpoint."""
+    jsonurl = urlopen("https://" + DOMAIN + "/.well-known/jwks.json")
     jwks = json.loads(jsonurl.read())
 
     rsa_key = {}
@@ -103,14 +102,14 @@ def build_rsa_key(unverified_header: dict[str, Any]) -> dict[str, Any]:
                 "kid": key["kid"],
                 "use": key["use"],
                 "n": key["n"],
-                "e": key["e"]
+                "e": key["e"],
             }
 
     return rsa_key
 
 
 def verify_rsa_key(rsa_key: dict[str, Any], token: str) -> dict[str, Any]:
-    """ Verify that the RSA Key is valid. """
+    """Verify that the RSA Key is valid."""
     if rsa_key:
         try:
             payload = jwt.decode(
@@ -118,43 +117,35 @@ def verify_rsa_key(rsa_key: dict[str, Any], token: str) -> dict[str, Any]:
                 rsa_key,
                 algorithms="RS256",
                 audience=CLIENT_ID,
-                issuer="https://" + DOMAIN + "/"
+                issuer="https://" + DOMAIN + "/",
             )
         except jwt.ExpiredSignatureError:
             raise AuthError(
-                {
-                    "code": "token_expired",
-                    "description": "Token is expired"
-                },
-                401
+                {"code": "token_expired", "description": "Token is expired"}, 401
             )
         except jwt.JWTClaimsError:
             raise AuthError(
                 {
                     "code": "invalid_claims",
-                    "description": "Incorrect claims, please check the audience and issuer"
+                    "description": "Incorrect claims, please check the audience and issuer",
                 },
-                401
+                401,
             )
         except Exception:
             raise AuthError(
                 {
                     "code": "invalid_header",
-                    "description": "Unable to parse authentication token."},
-                401
+                    "description": "Unable to parse authentication token.",
+                },
+                401,
             )
         return payload
 
-    raise AuthError(
-        {
-            "code": "no_rsa_key",
-            "description": "No RSA key in JWKS"},
-        401
-    )
+    raise AuthError({"code": "no_rsa_key", "description": "No RSA key in JWKS"}, 401)
 
 
 def verify_jwt() -> dict[str, Any]:
-    """ Verify that the client has a valid JWT. """
+    """Verify that the client has a valid JWT."""
     token = get_token_from_auth_header(request)
     unverified_header = verify_token_signature(token)
     rsa_key = build_rsa_key(unverified_header)
@@ -162,25 +153,23 @@ def verify_jwt() -> dict[str, Any]:
 
 
 def get_user_jwt(content: dict[str, Any]) -> requests.Response:
-    """ Return the user's JWT from Auth0. """
+    """Return the user's JWT from Auth0."""
     body = {
-        'grant_type': 'password',
-        'username': content.get("username", ""),
-        'password': content.get("password", ""),
-        'client_id': CLIENT_ID,
-        'client_secret': CLIENT_SECRET
+        "grant_type": "password",
+        "username": content.get("username", ""),
+        "password": content.get("password", ""),
+        "client_id": CLIENT_ID,
+        "client_secret": CLIENT_SECRET,
     }
-    headers = {
-        'content-type': 'application/json'
-    }
-    url = 'https://' + DOMAIN + '/oauth/token'
+    headers = {"content-type": "application/json"}
+    url = "https://" + DOMAIN + "/oauth/token"
     response = requests.post(url, json=body, headers=headers)
 
     return response
 
 
 def verify_request_body(body: dict[str, Any], fields: list[str]) -> bool:
-    """ Verify that an incoming request contains the required fields """
+    """Verify that an incoming request contains the required fields"""
     if not body or len(body) < len(fields):
         return False
 
@@ -192,9 +181,9 @@ def verify_request_body(body: dict[str, Any], fields: list[str]) -> bool:
 
 
 def verify_user_role(payload: dict[str, Any], role: str) -> bool:
-    """ Verify the users role prior to granting access to resources. """
+    """Verify the users role prior to granting access to resources."""
     query = client.query(kind="users")
-    query.add_filter('sub', '=', payload.get("sub", ""))
+    query.add_filter("sub", "=", payload.get("sub", ""))
     user = next(query.fetch(), None)
 
     if user and user.get("role", "") == role:
@@ -203,14 +192,14 @@ def verify_user_role(payload: dict[str, Any], role: str) -> bool:
         return False
 
 
-@app.route('/')
+@app.route("/")
 def index():
     return "Please provide a resource path to use the API."
 
 
-@app.route('/users/login', methods=['POST'])
+@app.route("/users/login", methods=["POST"])
 def user_login() -> tuple[dict[str, Any], int]:
-    """ Get a JWT for a single user """
+    """Get a JWT for a single user"""
     content = request.get_json()
     valid_request = verify_request_body(content, USER_FIELDS)
 
@@ -227,9 +216,8 @@ def user_login() -> tuple[dict[str, Any], int]:
     return {"token": token}, 200
 
 
-@app.route('/users', methods=['GET'])
-def get_all_users() -> (tuple[dict[str, Any], int]
-                        | tuple[list[Any], int]):
+@app.route("/users", methods=["GET"])
+def get_all_users() -> tuple[dict[str, Any], int] | tuple[list[Any], int]:
     """
     Return summary information for all users:
         1. User ID
@@ -249,17 +237,15 @@ def get_all_users() -> (tuple[dict[str, Any], int]
         results = list(query.fetch())
 
         for r in results:
-            r['id'] = r.key.id
+            r["id"] = r.key.id
 
         return results, 200
 
     return {"Error": "You don't have permission on this resource"}, 403
 
 
-@app.route('/users/<int:id>', methods=['GET'])
-def get_user(id: int) \
-        -> (tuple[dict[str, Any], int] |
-            tuple[list[Any], int]):
+@app.route("/users/<int:id>", methods=["GET"])
+def get_user(id: int) -> tuple[dict[str, Any], int] | tuple[list[Any], int]:
     """
     Return detailed information for a single user.
 
@@ -286,7 +272,7 @@ def get_user(id: int) \
     if not user:
         return {"Error": "You don't have permission on this resource"}, 403
 
-    user['id'] = user.key.id
+    user["id"] = user.key.id
     is_admin = verify_user_role(payload, "admin")
 
     # If the user is an admin, simply return summary information
@@ -309,118 +295,114 @@ def get_user(id: int) \
         kind = "courses"
         filter_id = "instructor_id"
 
-    user['courses'] = build_course_list(kind, filter_id, id)
+    user["courses"] = build_course_list(kind, filter_id, id)
 
     return user, 200
 
 
-def build_course_list(
-        kind: str,
-        filter_id: str,
-        user_id: int) \
-        -> list[str]:
-    """ Build a list of course URLs to be sent to the client. """
+def build_course_list(kind: str, filter_id: str, user_id: int) -> list[str]:
+    """Build a list of course URLs to be sent to the client."""
     query = client.query(kind=kind)
-    query.add_filter(filter_id, '=', user_id)
+    query.add_filter(filter_id, "=", user_id)
 
     courses = list(query.fetch())
     return [f"{GURL}/courses/{course.get('id', '')}" for course in courses]
 
 
-@app.route('/users/<int:id>/avatar', methods=['POST', 'GET', 'DELETE'])
+@app.route("/users/<int:id>/avatar", methods=["POST", "GET", "DELETE"])
 def avatar(id):
-    """ Upload or return an avatar for a single user based on the request type """
-    if request.method == 'GET':
+    """Upload or return an avatar for a single user based on the request type"""
+    if request.method == "GET":
         _get_avatar(id)
 
-    if request.method == 'POST':
+    if request.method == "POST":
         _upload_avatar(id)
 
-    if request.method == 'DELETE':
+    if request.method == "DELETE":
         _delete_avatar(id)
 
 
 def _get_avatar(id):
-    """ Upload an avatar for a single user """
+    """Upload an avatar for a single user"""
     pass
 
 
 def _upload_avatar(id):
-    """ Return the avatar for a single user """
+    """Return the avatar for a single user"""
     pass
 
 
 def _delete_avatar(id):
-    """ Delete the avatar for a single user """
+    """Delete the avatar for a single user"""
     pass
 
 
-@app.route('/courses', methods=['POST', 'GET'])
+@app.route("/courses", methods=["POST", "GET"])
 def course():
-    """ Create a course or return all courses depending on the request type """
+    """Create a course or return all courses depending on the request type"""
     pass
 
 
 def _get_all_courses():
-    """ Return all courses """
+    """Return all courses"""
     pass
 
 
 def _create_course():
-    """ Create a single course """
+    """Create a single course"""
     pass
 
 
-@app.route('/courses/<int:id>', methods=['GET', 'PUT', 'DELETE'])
+@app.route("/courses/<int:id>", methods=["GET", "PUT", "DELETE"])
 def course_by_id(id):
-    """ Return or update a single course depending on the request type """
-    if request.method == 'GET':
+    """Return or update a single course depending on the request type"""
+    if request.method == "GET":
         _get_course(id)
 
-    if request.method == 'PUT':
+    if request.method == "PUT":
         _update_course(id)
 
-    if request.method == 'DELETE':
+    if request.method == "DELETE":
         _delete_course(id)
 
 
 def _get_course(id):
-    """ Return a single course """
+    """Return a single course"""
     pass
 
 
 def _update_course(id):
-    """ Update a single course """
+    """Update a single course"""
     pass
 
 
 def _delete_course(id):
-    """ Delete a single course """
+    """Delete a single course"""
     pass
 
 
-@app.route('/courses/<int:id>/students', methods=['PUT', 'GET'])
+@app.route("/courses/<int:id>/students", methods=["PUT", "GET"])
 def course_students(id):
     """
     Update the enrollment of student or return all students for a single course
     depending on the request type
     """
-    if request.method == 'PUT':
+    if request.method == "PUT":
         _update_enrollment(id)
 
-    if request.method == 'GET':
+    if request.method == "GET":
         _get_all_students(id)
 
 
 def _update_enrollment(id):
-    """ Update students' enrollment in a single course """
+    """Update students' enrollment in a single course"""
     pass
 
 
 def _get_all_students(id):
-    """ Return all students enrolled in a single course """
+    """Return all students enrolled in a single course"""
     pass
 
 
-if __name__ == '__main__':
-    app.run(host='127.0.0.1', port=8080, debug=True)
+if __name__ == "__main__":
+    app.run(host="127.0.0.1", port=8080, debug=True)
