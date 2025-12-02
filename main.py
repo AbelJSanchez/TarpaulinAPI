@@ -222,6 +222,7 @@ def fetch_course(id: int) -> Entity:
     course = client.get(key=course_key)
     return course
 
+
 @app.route("/")
 def index():
     return "Please provide a resource path to use the API."
@@ -542,8 +543,8 @@ def get_course(id: int) -> tuple[dict[str, Any], int]:
     course = fetch_course(id)
     if not course:
         return {"Error": "Not found"}, 404
-    course['id'] = course.key.id
-    course['self'] = f"{GURL}/courses/{course['id']}"
+    course["id"] = course.key.id
+    course["self"] = f"{GURL}/courses/{course['id']}"
     return course, 200
 
 
@@ -581,14 +582,14 @@ def update_course(id: int) -> tuple[dict[str, Any], int]:
     return course, 200
 
 
-def update_course_in_datastore(id: int, content: dict[str, Any]) -> dict[str, Any] :
+def update_course_in_datastore(id: int, content: dict[str, Any]) -> dict[str, Any]:
     """Helper function to update the course in Datastore."""
     course = fetch_course(id)
     for key, value in content.items():
         course[key] = value
     client.put(course)
-    course['id'] = course.key.id
-    course['self'] = f"{GURL}/courses/{course['id']}"
+    course["id"] = course.key.id
+    course["self"] = f"{GURL}/courses/{course['id']}"
     return course
 
 
