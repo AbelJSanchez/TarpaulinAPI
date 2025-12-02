@@ -2,3 +2,4 @@
 .venv
 .gcloudignore
 __pycache__
+.env

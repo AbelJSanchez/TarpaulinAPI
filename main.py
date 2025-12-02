@@ -1,15 +1,25 @@
 import requests
 import json
+import os
+import io
 
 from typing import Any
+from dotenv import load_dotenv
 
 from six.moves.urllib.request import urlopen
 
 from jose import jwt
 from authlib.integrations.flask_client import OAuth
-from google.cloud import datastore
+from google.cloud import datastore, storage
+from google.cloud.datastore import Entity
 
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
+
+load_dotenv()
+CLIENT_ID = os.getenv("CLIENT_ID")
+CLIENT_SECRET = os.getenv("CLIENT_SECRET")
+DOMAIN = os.getenv("DOMAIN")
+BUCKET = os.getenv("BUCKET")
 
 app = Flask(__name__)
 
@@ -31,6 +41,7 @@ auth0 = oauth.register(
 
 # Required Fields
 USER_FIELDS = ["username", "password"]
+COURSE_FIELDS = ["subject", "number", "title", "term", "instructor_id"]
 
 
 class AuthError(Exception):
@@ -182,14 +193,27 @@ def verify_request_body(body: dict[str, Any], fields: list[str]) -> bool:
 
 def verify_user_role(payload: dict[str, Any], role: str) -> bool:
     """Verify the users role prior to granting access to resources."""
-    query = client.query(kind="users")
-    query.add_filter("sub", "=", payload.get("sub", ""))
-    user = next(query.fetch(), None)
+    user = fetch_user_by_sub(payload.get("sub", ""))
 
     if user and user.get("role", "") == role:
         return True
     else:
         return False
+
+
+def fetch_user(id: int) -> Entity:
+    """Retrieve a user using their user ID."""
+    user_key = client.key("users", id)
+    user = client.get(key=user_key)
+    return user
+
+
+def fetch_user_by_sub(sub: str) -> Entity:
+    """Retrieve a user using their sub."""
+    query = client.query(kind="users")
+    query.add_filter("sub", "=", sub)
+    user = next(query.fetch(), None)
+    return user
 
 
 @app.route("/")
@@ -238,6 +262,8 @@ def get_all_users() -> tuple[dict[str, Any], int] | tuple[list[Any], int]:
 
         for r in results:
             r["id"] = r.key.id
+            r.pop("avatar_url", None)
+            r.pop("file_name", None)
 
         return results, 200
 
@@ -246,33 +272,18 @@ def get_all_users() -> tuple[dict[str, Any], int] | tuple[list[Any], int]:
 
 @app.route("/users/<int:id>", methods=["GET"])
 def get_user(id: int) -> tuple[dict[str, Any], int] | tuple[list[Any], int]:
-    """
-    Return detailed information for a single user.
-
-    For all valid requests:
-        1. User ID
-        2. User Role
-        3. User Sub
-        4. Avatar, if the user has an avatar uploaded
-
-    If the user is a student:
-        5. A list of courses that they are enrolled in
-
-    If the user is an instructor:
-        5. A list of courses that they teach
-    """
+    """Return detailed information for a single user."""
     try:
         payload = verify_jwt()
     except AuthError:
-        return {"Error": "Unauthroize"}, 401
+        return {"Error": "Unauthorized"}, 401
 
-    user_key = client.key("users", id)
-    user = client.get(key=user_key)
+    user = fetch_user(id)
+    user["id"] = user.key.id
 
     if not user:
         return {"Error": "You don't have permission on this resource"}, 403
 
-    user["id"] = user.key.id
     is_admin = verify_user_role(payload, "admin")
 
     # If the user is an admin, simply return summary information
@@ -296,6 +307,7 @@ def get_user(id: int) -> tuple[dict[str, Any], int] | tuple[list[Any], int]:
         filter_id = "instructor_id"
 
     user["courses"] = build_course_list(kind, filter_id, id)
+    user.pop("file_name", None)
 
     return user, 200
 
@@ -310,73 +322,222 @@ def build_course_list(kind: str, filter_id: str, user_id: int) -> list[str]:
 
 
 @app.route("/users/<int:id>/avatar", methods=["POST", "GET", "DELETE"])
-def avatar(id):
-    """Upload or return an avatar for a single user based on the request type"""
+def avatar(id: int):
+    """Upload or return an avatar for a single user based on the request type."""
     if request.method == "GET":
-        _get_avatar(id)
+        get_avatar(id)
 
     if request.method == "POST":
-        _upload_avatar(id)
+        upload_avatar(id)
 
     if request.method == "DELETE":
-        _delete_avatar(id)
+        delete_avatar(id)
 
 
-def _get_avatar(id):
-    """Upload an avatar for a single user"""
-    pass
+def get_avatar(id: int):
+    """Return an avatar for a single user."""
+    try:
+        payload = verify_jwt()
+    except AuthError:
+        return {"Error": "Unauthorized"}, 401
+
+    user = fetch_user(id)
+
+    if not user:
+        return {"Error": "You don't have permission on this resource"}, 403
+
+    # User can only access their own information
+    if payload.get("sub", "") != user.get("sub", ""):
+        return {"Error": "You don't have permission on this resource"}, 403
+
+    # If the user does not have an avatar
+    if user.pop("avatar_url", None) is None:
+        return {"Error": "Not found"}, 404
+
+    file = get_avatar_from_bucket(user.get("file_name", ""))
+
+    return file, 200
 
 
-def _upload_avatar(id):
-    """Return the avatar for a single user"""
-    pass
+def get_avatar_from_bucket(file_name: str):
+    """Helper function to get file from Google cloud bucket."""
+    storage_client = storage.Client()
+    bucket = storage_client.get_bucket(BUCKET)
+
+    blob = bucket.blob(file_name)
+    file_obj = io.BytesIO()
+    blob.download_to_file(file_obj)
+
+    file_obj.seek(0)
+
+    return send_file(file_obj, mimetype="image/x-png", download_name=file_name)
 
 
-def _delete_avatar(id):
+def upload_avatar(id: int) -> tuple[dict[str, str], int]:
+    """Upload an avatar for a single user."""
+    if "file" not in request.files["file"]:
+        return {"Error": "The request body is invalid"}, 400
+
+    try:
+        payload = verify_jwt()
+    except AuthError:
+        return {"Error": "Unauthorized"}, 401
+
+    user = fetch_user(id)
+
+    if not user:
+        return {"Error": "You don't have permission on this resource"}, 403
+
+    # User can only access their own information
+    if payload.get("sub", "") != user.get("sub", ""):
+        return {"Error": "You don't have permission on this resource"}, 403
+
+    return_url = upload_avatar_to_bucket(request, user)
+
+    return {"avatar_url": return_url}, 200
+
+
+def upload_avatar_to_bucket(request, entity: Entity) -> str:
+    """Helper function to upload file to Google cloud bucket."""
+    storage_client = storage.Client()
+    bucket = storage_client.get_bucket(BUCKET)
+
+    file_obj = request.files["file"]
+    blob = bucket.blob(file_obj.filename)
+    file_obj.seek(0)
+    blob.upload_from_file(file_obj)
+
+    avatar_url = f"{GURL}/users/{id}/avatar"
+
+    entity.update({"avatar_url": avatar_url, "file_name": file_obj.file_name})
+    client.put(entity)
+
+    return avatar_url
+
+
+def delete_avatar(id: int) -> tuple[dict[str, str], int] | tuple[str, int]:
     """Delete the avatar for a single user"""
-    pass
+    try:
+        payload = verify_jwt()
+    except AuthError:
+        return {"Error": "Unauthorized"}, 401
+
+    user = fetch_user(id)
+
+    if not user:
+        return {"Error": "You don't have permission on this resource"}, 403
+
+    # User can only delete their own information
+    if payload.get("sub", "") != user.get("sub", ""):
+        return {"Error": "You don't have permission on this resource"}, 403
+
+    # If the user does not have an avatar
+    if user.pop("avatar_url", None) is None:
+        return {"Error": "Not found"}, 404
+
+    delete_avatar_from_bucket(user.get("file_name", ""))
+
+    return "", 204
+
+
+def delete_avatar_from_bucket(file_name: str) -> None:
+    """Helper function to delete a file from Google cloud bucket."""
+    storage_client = storage.Client()
+    bucket = storage_client.get_bucket(BUCKET)
+    blob = bucket.blob(file_name)
+    blob.delete()
 
 
 @app.route("/courses", methods=["POST", "GET"])
-def course():
-    """Create a course or return all courses depending on the request type"""
+def courses():
+    """Create a course or return all courses depending on the request type."""
+    if request.method == "POST":
+        create_course()
+
+    if request.method == "GET":
+        get_all_courses()
+
+
+def get_all_courses():
+    """Return all courses using pagination."""
     pass
 
 
-def _get_all_courses():
-    """Return all courses"""
-    pass
+def create_course() -> tuple[dict[str, Any], int]:
+    """Create a single course."""
+    try:
+        payload = verify_jwt()
+    except AuthError:
+        return {"Error": "Unauthorized"}, 401
+
+    is_admin = verify_user_role(payload, "admin")
+
+    # Only admin can create courses
+    if not is_admin:
+        return {"Error": "You don't have permission on this resource"}, 403
+
+    content = request.get_json()
+
+    valid_request = verify_request_body(content, USER_FIELDS)
+    if not valid_request:
+        return {"Error": "The request body is invalid"}, 400
+
+    # If the user tries to assign the course to an instructor that does not exist
+    user = fetch_user(content.get("instructor_id"))
+    if not user:
+        return {"Error": "You don't have permission on this resource"}, 400
+
+    course = create_course_in_datastore(content)
+
+    return course, 201
 
 
-def _create_course():
-    """Create a single course"""
-    pass
+def create_course_in_datastore(content: dict[str, Any]) -> dict[str, Any]:
+    """Helper function to create a course Entity in Datastore."""
+    new_key = client.key("courses")
+    new_course = datastore.Entity(key=new_key)
+
+    new_course.update(
+        {
+            "instructor_id": content["instructor_id"],
+            "number": content["number"],
+            "subject": content["subject"],
+            "term": content["term"],
+            "title": content["title"],
+        }
+    )
+
+    client.put(new_course)
+    new_course["id"] = new_course.key.id
+    new_course["self"] = f"{GURL}/courses/{new_course['id']}"
+
+    return new_course
 
 
 @app.route("/courses/<int:id>", methods=["GET", "PUT", "DELETE"])
 def course_by_id(id):
     """Return or update a single course depending on the request type"""
     if request.method == "GET":
-        _get_course(id)
+        get_course(id)
 
     if request.method == "PUT":
-        _update_course(id)
+        update_course(id)
 
     if request.method == "DELETE":
-        _delete_course(id)
+        delete_course(id)
 
 
-def _get_course(id):
+def get_course(id):
     """Return a single course"""
     pass
 
 
-def _update_course(id):
+def update_course(id):
     """Update a single course"""
     pass
 
 
-def _delete_course(id):
+def delete_course(id):
     """Delete a single course"""
     pass
 
@@ -388,18 +549,18 @@ def course_students(id):
     depending on the request type
     """
     if request.method == "PUT":
-        _update_enrollment(id)
+        update_enrollment(id)
 
     if request.method == "GET":
-        _get_all_students(id)
+        get_all_students(id)
 
 
-def _update_enrollment(id):
+def update_enrollment(id):
     """Update students' enrollment in a single course"""
     pass
 
 
-def _get_all_students(id):
+def get_all_students(id):
     """Return all students enrolled in a single course"""
     pass
 

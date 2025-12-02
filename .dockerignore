@@ -2,3 +2,4 @@ env
 __pychache__
 .venv
 .gitignore
+.env
