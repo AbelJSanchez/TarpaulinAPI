@@ -216,6 +216,12 @@ def fetch_user_by_sub(sub: str) -> Entity:
     return user
 
 
+def fetch_course(id: int) -> Entity:
+    """Retrive a course by its ID"""
+    course_key = client.key("courses", id)
+    course = client.get(key=course_key)
+    return course
+
 @app.route("/")
 def index():
     return "Please provide a resource path to use the API."
@@ -487,6 +493,10 @@ def create_course() -> tuple[dict[str, Any], int]:
     if not user:
         return {"Error": "You don't have permission on this resource"}, 400
 
+    # If the user tries to assign the course to a user that is not an instructor
+    if user.get("role", "") != "instructor":
+        return {"Error": "You don't have permission on this resource"}, 400
+
     course = create_course_in_datastore(content)
 
     return course, 201
@@ -515,7 +525,7 @@ def create_course_in_datastore(content: dict[str, Any]) -> dict[str, Any]:
 
 
 @app.route("/courses/<int:id>", methods=["GET", "PUT", "DELETE"])
-def course_by_id(id):
+def course_by_id(id: int):
     """Return or update a single course depending on the request type"""
     if request.method == "GET":
         get_course(id)
@@ -527,18 +537,63 @@ def course_by_id(id):
         delete_course(id)
 
 
-def get_course(id):
+def get_course(id: int) -> tuple[dict[str, Any], int]:
     """Return a single course"""
-    pass
+    course = fetch_course(id)
+    if not course:
+        return {"Error": "Not found"}, 404
+    course['id'] = course.key.id
+    course['self'] = f"{GURL}/courses/{course['id']}"
+    return course, 200
 
 
-def update_course(id):
+def update_course(id: int) -> tuple[dict[str, Any], int]:
     """Update a single course"""
-    pass
+    try:
+        payload = verify_jwt()
+    except AuthError:
+        return {"Error": "Unauthorized"}, 401
+
+    course = fetch_course(id)
+    if not course:
+        return {"Error": "You don't have permission on this resource"}, 403
+
+    is_admin = verify_user_role(payload, "admin")
+
+    # Only admins can update courses
+    if not is_admin:
+        return {"Error": "You don't have permission on this resource"}, 403
+
+    content = request.json()
+
+    # If the user tries to update a course with an instructor that does not exist
+    if content.get("instructor_id", "") == "":
+        return {"Error": "You don't have permission on this resource"}, 400
+
+    user = fetch_user(content.get("instructor_id", ""))
+
+    # If the user tries to update a course with a user that is not an instructor
+    if user.get("role", "") != "instructor":
+        return {"Error": "You don't have permission on this resource"}, 400
+
+    course = update_course_in_datastore(id, content)
+
+    return course, 200
 
 
-def delete_course(id):
-    """Delete a single course"""
+def update_course_in_datastore(id: int, content: dict[str, Any]) -> dict[str, Any] :
+    """Helper function to update the course in Datastore."""
+    course = fetch_course(id)
+    for key, value in content.items():
+        course[key] = value
+    client.put(course)
+    course['id'] = course.key.id
+    course['self'] = f"{GURL}/courses/{course['id']}"
+    return course
+
+
+def delete_course(id: int) -> tuple[dict[str, Any], int]:
+    """Delete a single course."""
     pass
 
 
