@@ -428,10 +428,10 @@ def remove_avatar_url(user: Entity) -> None:
 def courses():
     """Create a course or return all courses depending on the request type."""
     if request.method == "POST":
-        create_course()
+        return create_course()
 
     if request.method == "GET":
-        get_all_courses()
+        return get_all_courses()
 
 
 def get_all_courses():
@@ -454,18 +454,18 @@ def create_course() -> tuple[dict[str, Any], int]:
 
     content = request.get_json()
 
-    valid_request = verify_request_body(content, USER_FIELDS)
+    valid_request = verify_request_body(content, COURSE_FIELDS)
     if not valid_request:
         return {"Error": "The request body is invalid"}, 400
 
     # If the user tries to assign the course to an instructor that does not exist
     user = fetch_user_by_id(content.get("instructor_id"))
     if not user:
-        return {"Error": "You don't have permission on this resource"}, 400
+        return {"Error": "The request body is invalid"}, 400
 
     # If the user tries to assign the course to a user that is not an instructor
     if user.get("role", "") != "instructor":
-        return {"Error": "You don't have permission on this resource"}, 400
+        return {"Error": "The request body is invalid"}, 400
 
     course = create_course_in_datastore(content)
 
@@ -498,13 +498,13 @@ def create_course_in_datastore(content: dict[str, Any]) -> dict[str, Any]:
 def course_by_id(id: int):
     """Return or update a single course depending on the request type"""
     if request.method == "GET":
-        get_course(id)
+        return get_course(id)
 
     if request.method == "PUT":
-        update_course(id)
+        return update_course(id)
 
     if request.method == "DELETE":
-        delete_course(id)
+        return delete_course(id)
 
 
 def get_course(id: int) -> tuple[dict[str, Any], int]:
@@ -515,6 +515,13 @@ def get_course(id: int) -> tuple[dict[str, Any], int]:
     course["id"] = course.key.id
     course["self"] = f"{GURL}/courses/{course['id']}"
     return course, 200
+
+
+def fetch_course(id: int) -> Entity:
+    """Retrive a course by its ID"""
+    course_key = client.key("courses", id)
+    course = client.get(key=course_key)
+    return course
 
 
 def update_course(id: int) -> tuple[dict[str, Any], int]:
@@ -644,13 +651,6 @@ def build_course_list(kind: str, filter_id: str, user_id: int) -> list[str]:
 
     courses = list(query.fetch())
     return [f"{GURL}/courses/{course.get('id', '')}" for course in courses]
-
-
-def fetch_course(id: int) -> Entity:
-    """Retrive a course by its ID"""
-    course_key = client.key("courses", id)
-    course = client.get(key=course_key)
-    return course
 
 
 if __name__ == "__main__":
