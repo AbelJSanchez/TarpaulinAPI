@@ -494,13 +494,13 @@ def create_course_in_datastore(content: dict[str, Any]) -> dict[str, Any]:
     return new_course
 
 
-@app.route("/courses/<int:id>", methods=["GET", "PUT", "DELETE"])
+@app.route("/courses/<int:id>", methods=["GET", "PATCH", "DELETE"])
 def course_by_id(id: int):
     """Return or update a single course depending on the request type"""
     if request.method == "GET":
         return get_course(id)
 
-    if request.method == "PUT":
+    if request.method == "PATCH":
         return update_course(id)
 
     if request.method == "DELETE":
@@ -515,13 +515,6 @@ def get_course(id: int) -> tuple[dict[str, Any], int]:
     course["id"] = course.key.id
     course["self"] = f"{GURL}/courses/{course['id']}"
     return course, 200
-
-
-def fetch_course(id: int) -> Entity:
-    """Retrive a course by its ID"""
-    course_key = client.key("courses", id)
-    course = client.get(key=course_key)
-    return course
 
 
 def update_course(id: int) -> tuple[dict[str, Any], int]:
@@ -541,17 +534,15 @@ def update_course(id: int) -> tuple[dict[str, Any], int]:
     if not is_admin:
         return {"Error": "You don't have permission on this resource"}, 403
 
-    content = request.json()
+    content = request.get_json()
 
     # If the user tries to update a course with an instructor that does not exist
-    if content.get("instructor_id", "") == "":
-        return {"Error": "You don't have permission on this resource"}, 400
+    if "instructor_id" in content:
+        instructor = fetch_user_by_id(content.get("instructor_id", ""))
 
-    user = fetch_user_by_id(content.get("instructor_id", ""))
-
-    # If the user tries to update a course with a user that is not an instructor
-    if user.get("role", "") != "instructor":
-        return {"Error": "You don't have permission on this resource"}, 400
+        # If the user tries to update a course with a user that is not an instructor
+        if instructor.get("role", "") != "instructor":
+            return {"Error": "You don't have permission on this resource"}, 400
 
     course = update_course_in_datastore(id, content)
 
@@ -582,19 +573,32 @@ def delete_course(id: int) -> tuple[dict[str, Any], int]:
 @app.route("/courses/<int:id>/students", methods=["PUT", "GET"])
 def course_students(id):
     """
-    Update the enrollment of student or return all students for a single course
+    Update the enrollment of student(s) or return all students for a single course
     depending on the request type
     """
     if request.method == "PUT":
-        update_enrollment(id)
+        return update_enrollment(id)
 
     if request.method == "GET":
-        get_all_students(id)
+        return get_all_students(id)
 
 
 def update_enrollment(id):
     """Update students' enrollment in a single course"""
-    pass
+    try:
+        payload = verify_jwt()
+    except AuthError:
+        return {"Error": "Unauthorized"}, 401
+
+    course = fetch_course(id)
+    if not course:
+        return {"Error": "You don't have permission on this resource"}, 403
+
+    # TODO: If the user is not an admin or the instructor of the course, return 403
+
+    # TODO: 409 Error
+
+    # TODO: 200
 
 
 def get_all_students(id):
@@ -629,18 +633,24 @@ def verify_user_role(payload: dict[str, Any], role: str) -> bool:
         return False
 
 
-def fetch_user_by_id(id: int) -> Entity:
+def fetch_user_by_id(id: int) -> Entity | None:
     """Retrieve a user using their user ID."""
     user_key = client.key("users", id)
     user = client.get(key=user_key)
+    user['id'] = user.key.id
+    if not user:
+        return None
     return user
 
 
-def fetch_user_by_sub(sub: str) -> Entity:
+def fetch_user_by_sub(sub: str) -> Entity | None:
     """Retrieve a user using their sub."""
     query = client.query(kind="users")
     query.add_filter("sub", "=", sub)
     user = next(query.fetch(), None)
+    user['id'] = user.key.id
+    if not user:
+        return None
     return user
 
 
@@ -651,6 +661,15 @@ def build_course_list(kind: str, filter_id: str, user_id: int) -> list[str]:
 
     courses = list(query.fetch())
     return [f"{GURL}/courses/{course.get('id', '')}" for course in courses]
+
+
+def fetch_course(id: int) -> Entity | None:
+    """Retrieve a course by its ID"""
+    course_key = client.key("courses", id)
+    course = client.get(key=course_key)
+    if not course:
+        return None
+    return course
 
 
 if __name__ == "__main__":
