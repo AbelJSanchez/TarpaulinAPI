@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import requests
 import json
 import os
@@ -27,7 +29,7 @@ client = datastore.Client()
 
 oauth = OAuth(app)
 
-GURL = "https://assignment-6-tarpaulin-479819.wl.r.appspot.com"
+GURL = "http://127.0.0.1:8080"
 
 auth0 = oauth.register(
     "auth0",
@@ -42,6 +44,11 @@ auth0 = oauth.register(
 # Required Fields
 USER_FIELDS = ["username", "password"]
 COURSE_FIELDS = ["subject", "number", "title", "term", "instructor_id"]
+
+
+# ----------------------------------------------------------------------------
+# JWT/AUTHENTICATION FUNCTIONS
+# ----------------------------------------------------------------------------
 
 
 class AuthError(Exception):
@@ -179,58 +186,19 @@ def get_user_jwt(content: dict[str, Any]) -> requests.Response:
     return response
 
 
-def verify_request_body(body: dict[str, Any], fields: list[str]) -> bool:
-    """Verify that an incoming request contains the required fields"""
-    if not body or len(body) < len(fields):
-        return False
-
-    for field in fields:
-        if field not in body:
-            return False
-
-    return True
-
-
-def verify_user_role(payload: dict[str, Any], role: str) -> bool:
-    """Verify the users role prior to granting access to resources."""
-    user = fetch_user_by_sub(payload.get("sub", ""))
-
-    if user and user.get("role", "") == role:
-        return True
-    else:
-        return False
-
-
-def fetch_user(id: int) -> Entity:
-    """Retrieve a user using their user ID."""
-    user_key = client.key("users", id)
-    user = client.get(key=user_key)
-    return user
-
-
-def fetch_user_by_sub(sub: str) -> Entity:
-    """Retrieve a user using their sub."""
-    query = client.query(kind="users")
-    query.add_filter("sub", "=", sub)
-    user = next(query.fetch(), None)
-    return user
-
-
-def fetch_course(id: int) -> Entity:
-    """Retrive a course by its ID"""
-    course_key = client.key("courses", id)
-    course = client.get(key=course_key)
-    return course
-
-
 @app.route("/")
 def index():
     return "Please provide a resource path to use the API."
 
 
+# ----------------------------------------------------------------------------
+# USER ENDPOINTS
+# ----------------------------------------------------------------------------
+
+
 @app.route("/users/login", methods=["POST"])
 def user_login() -> tuple[dict[str, Any], int]:
-    """Get a JWT for a single user"""
+    """Return a JWT for a single user."""
     content = request.get_json()
     valid_request = verify_request_body(content, USER_FIELDS)
 
@@ -249,12 +217,7 @@ def user_login() -> tuple[dict[str, Any], int]:
 
 @app.route("/users", methods=["GET"])
 def get_all_users() -> tuple[dict[str, Any], int] | tuple[list[Any], int]:
-    """
-    Return summary information for all users:
-        1. User ID
-        2. User Role
-        3. User Sub
-    """
+    """Return summary information for all users."""
     try:
         payload = verify_jwt()
     except AuthError:
@@ -263,18 +226,18 @@ def get_all_users() -> tuple[dict[str, Any], int] | tuple[list[Any], int]:
     is_admin = verify_user_role(payload, "admin")
 
     # Only return information if the user is an admin
-    if is_admin:
-        query = client.query(kind="users")
-        results = list(query.fetch())
+    if not is_admin:
+        return {"Error": "You don't have permission on this resource"}, 403
 
-        for r in results:
-            r["id"] = r.key.id
-            r.pop("avatar_url", None)
-            r.pop("file_name", None)
+    query = client.query(kind="users")
+    results = list(query.fetch())
 
-        return results, 200
+    for r in results:
+        r["id"] = r.key.id
+        r.pop("avatar_url", None)
+        r.pop("file_name", None)
 
-    return {"Error": "You don't have permission on this resource"}, 403
+    return results, 200
 
 
 @app.route("/users/<int:id>", methods=["GET"])
@@ -285,7 +248,7 @@ def get_user(id: int) -> tuple[dict[str, Any], int] | tuple[list[Any], int]:
     except AuthError:
         return {"Error": "Unauthorized"}, 401
 
-    user = fetch_user(id)
+    user = fetch_user_by_id(id)
     user["id"] = user.key.id
 
     if not user:
@@ -319,26 +282,22 @@ def get_user(id: int) -> tuple[dict[str, Any], int] | tuple[list[Any], int]:
     return user, 200
 
 
-def build_course_list(kind: str, filter_id: str, user_id: int) -> list[str]:
-    """Build a list of course URLs to be sent to the client."""
-    query = client.query(kind=kind)
-    query.add_filter(filter_id, "=", user_id)
-
-    courses = list(query.fetch())
-    return [f"{GURL}/courses/{course.get('id', '')}" for course in courses]
+# ----------------------------------------------------------------------------
+# AVATAR ENDPOINTS
+# ----------------------------------------------------------------------------
 
 
 @app.route("/users/<int:id>/avatar", methods=["POST", "GET", "DELETE"])
 def avatar(id: int):
     """Upload or return an avatar for a single user based on the request type."""
     if request.method == "GET":
-        get_avatar(id)
+        return get_avatar(id)
 
     if request.method == "POST":
-        upload_avatar(id)
+        return upload_avatar(id)
 
     if request.method == "DELETE":
-        delete_avatar(id)
+        return delete_avatar(id)
 
 
 def get_avatar(id: int):
@@ -348,7 +307,7 @@ def get_avatar(id: int):
     except AuthError:
         return {"Error": "Unauthorized"}, 401
 
-    user = fetch_user(id)
+    user = fetch_user_by_id(id)
 
     if not user:
         return {"Error": "You don't have permission on this resource"}, 403
@@ -358,7 +317,7 @@ def get_avatar(id: int):
         return {"Error": "You don't have permission on this resource"}, 403
 
     # If the user does not have an avatar
-    if user.pop("avatar_url", None) is None:
+    if user.get("avatar_url", None) is None:
         return {"Error": "Not found"}, 404
 
     file = get_avatar_from_bucket(user.get("file_name", ""))
@@ -367,7 +326,7 @@ def get_avatar(id: int):
 
 
 def get_avatar_from_bucket(file_name: str):
-    """Helper function to get file from Google cloud bucket."""
+    """Get a file from Google cloud bucket."""
     storage_client = storage.Client()
     bucket = storage_client.get_bucket(BUCKET)
 
@@ -377,20 +336,17 @@ def get_avatar_from_bucket(file_name: str):
 
     file_obj.seek(0)
 
-    return send_file(file_obj, mimetype="image/x-png", download_name=file_name)
+    return send_file(file_obj, mimetype="image/png")
 
 
 def upload_avatar(id: int) -> tuple[dict[str, str], int]:
     """Upload an avatar for a single user."""
-    if "file" not in request.files["file"]:
-        return {"Error": "The request body is invalid"}, 400
-
     try:
         payload = verify_jwt()
     except AuthError:
         return {"Error": "Unauthorized"}, 401
 
-    user = fetch_user(id)
+    user = fetch_user_by_id(id)
 
     if not user:
         return {"Error": "You don't have permission on this resource"}, 403
@@ -399,27 +355,28 @@ def upload_avatar(id: int) -> tuple[dict[str, str], int]:
     if payload.get("sub", "") != user.get("sub", ""):
         return {"Error": "You don't have permission on this resource"}, 403
 
-    return_url = upload_avatar_to_bucket(request, user)
-
-    return {"avatar_url": return_url}, 200
+    return upload_avatar_to_bucket(request, user, id)
 
 
-def upload_avatar_to_bucket(request, entity: Entity) -> str:
+def upload_avatar_to_bucket(request, entity: Entity, id: int) -> tuple[dict, int]:
     """Helper function to upload file to Google cloud bucket."""
-    storage_client = storage.Client()
+    storage_client = storage.Client(project="assignment-6-tarpaulin-479819")
     bucket = storage_client.get_bucket(BUCKET)
 
-    file_obj = request.files["file"]
+    file_obj = request.files.get("file", None)
+    if file_obj is None:
+        return {"Error": "The request body is invalid"}, 400
+
     blob = bucket.blob(file_obj.filename)
     file_obj.seek(0)
     blob.upload_from_file(file_obj)
 
-    avatar_url = f"{GURL}/users/{id}/avatar"
+    avatar_url = f"{GURL}/users/{str(id)}/avatar"
 
-    entity.update({"avatar_url": avatar_url, "file_name": file_obj.file_name})
+    entity.update({"avatar_url": avatar_url, "file_name": file_obj.filename})
     client.put(entity)
 
-    return avatar_url
+    return {"avatar_url": avatar_url}, 200
 
 
 def delete_avatar(id: int) -> tuple[dict[str, str], int] | tuple[str, int]:
@@ -429,7 +386,7 @@ def delete_avatar(id: int) -> tuple[dict[str, str], int] | tuple[str, int]:
     except AuthError:
         return {"Error": "Unauthorized"}, 401
 
-    user = fetch_user(id)
+    user = fetch_user_by_id(id)
 
     if not user:
         return {"Error": "You don't have permission on this resource"}, 403
@@ -439,10 +396,11 @@ def delete_avatar(id: int) -> tuple[dict[str, str], int] | tuple[str, int]:
         return {"Error": "You don't have permission on this resource"}, 403
 
     # If the user does not have an avatar
-    if user.pop("avatar_url", None) is None:
+    if user.get("avatar_url", None) is None:
         return {"Error": "Not found"}, 404
 
     delete_avatar_from_bucket(user.get("file_name", ""))
+    remove_avatar_url(user)
 
     return "", 204
 
@@ -453,6 +411,17 @@ def delete_avatar_from_bucket(file_name: str) -> None:
     bucket = storage_client.get_bucket(BUCKET)
     blob = bucket.blob(file_name)
     blob.delete()
+
+
+def remove_avatar_url(user: Entity) -> None:
+    """Helper function to delete avatar_url property"""
+    del user["avatar_url"]
+    client.put(user)
+
+
+# ----------------------------------------------------------------------------
+# COURSE ENDPOINTS
+# ----------------------------------------------------------------------------
 
 
 @app.route("/courses", methods=["POST", "GET"])
@@ -490,7 +459,7 @@ def create_course() -> tuple[dict[str, Any], int]:
         return {"Error": "The request body is invalid"}, 400
 
     # If the user tries to assign the course to an instructor that does not exist
-    user = fetch_user(content.get("instructor_id"))
+    user = fetch_user_by_id(content.get("instructor_id"))
     if not user:
         return {"Error": "You don't have permission on this resource"}, 400
 
@@ -571,7 +540,7 @@ def update_course(id: int) -> tuple[dict[str, Any], int]:
     if content.get("instructor_id", "") == "":
         return {"Error": "You don't have permission on this resource"}, 400
 
-    user = fetch_user(content.get("instructor_id", ""))
+    user = fetch_user_by_id(content.get("instructor_id", ""))
 
     # If the user tries to update a course with a user that is not an instructor
     if user.get("role", "") != "instructor":
@@ -598,6 +567,11 @@ def delete_course(id: int) -> tuple[dict[str, Any], int]:
     pass
 
 
+# ----------------------------------------------------------------------------
+# ENROLLMENT FUNCTIONS
+# ----------------------------------------------------------------------------
+
+
 @app.route("/courses/<int:id>/students", methods=["PUT", "GET"])
 def course_students(id):
     """
@@ -619,6 +593,64 @@ def update_enrollment(id):
 def get_all_students(id):
     """Return all students enrolled in a single course"""
     pass
+
+
+# ----------------------------------------------------------------------------
+# HELPER FUNCTIONS
+# ----------------------------------------------------------------------------
+
+
+def verify_request_body(body: dict[str, Any], fields: list[str]) -> bool:
+    """Verify that an incoming request contains the required fields."""
+    if not body or len(body) < len(fields):
+        return False
+
+    for field in fields:
+        if field not in body:
+            return False
+
+    return True
+
+
+def verify_user_role(payload: dict[str, Any], role: str) -> bool:
+    """Verify the users role prior to granting access to resources."""
+    user = fetch_user_by_sub(payload.get("sub", ""))
+
+    if user and user.get("role", "") == role:
+        return True
+    else:
+        return False
+
+
+def fetch_user_by_id(id: int) -> Entity:
+    """Retrieve a user using their user ID."""
+    user_key = client.key("users", id)
+    user = client.get(key=user_key)
+    return user
+
+
+def fetch_user_by_sub(sub: str) -> Entity:
+    """Retrieve a user using their sub."""
+    query = client.query(kind="users")
+    query.add_filter("sub", "=", sub)
+    user = next(query.fetch(), None)
+    return user
+
+
+def build_course_list(kind: str, filter_id: str, user_id: int) -> list[str]:
+    """Build a list of course URLs to be sent to the client."""
+    query = client.query(kind=kind)
+    query.add_filter(filter_id, "=", user_id)
+
+    courses = list(query.fetch())
+    return [f"{GURL}/courses/{course.get('id', '')}" for course in courses]
+
+
+def fetch_course(id: int) -> Entity:
+    """Retrive a course by its ID"""
+    course_key = client.key("courses", id)
+    course = client.get(key=course_key)
+    return course
 
 
 if __name__ == "__main__":
