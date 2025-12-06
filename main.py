@@ -250,8 +250,8 @@ def fetch_users() -> list[dict]:
     return results
 
 
-@app.route("/users/<int:id>", methods=["GET"])
-def get_user(id: int) -> tuple[dict, int] | tuple[list, int]:
+@app.route("/users/<int:user_id>", methods=["GET"])
+def get_user(user_id: int) -> tuple[dict, int] | tuple[list, int]:
     """Return detailed information for a single user."""
     try:
         payload = verify_jwt()
@@ -259,7 +259,7 @@ def get_user(id: int) -> tuple[dict, int] | tuple[list, int]:
         return {"Error": "Unauthorized"}, 401
 
     # If the id does not exist in the database
-    user = fetch_user_by_id(id)
+    user = fetch_user_by_id(user_id)
     if not user:
         return {"Error": "You don't have permission on this resource"}, 403
 
@@ -276,7 +276,7 @@ def get_user(id: int) -> tuple[dict, int] | tuple[list, int]:
     # If the user is a student, return a list of courses they are enrolled in
     # If the user is an instructor, return a list of courses they teach
     kind, filter_id = get_kind_and_filter_id(user.get("role", ""))
-    user["courses"] = build_course_list(kind, filter_id, id)
+    user["courses"] = build_course_list(kind, filter_id, user_id)
     user.pop("file_name", None)
 
     return user, 200
@@ -299,41 +299,40 @@ def get_kind_and_filter_id(user_role: str) -> tuple[str, str]:
 # ----------------------------------------------------------------------------
 
 
-@app.route("/users/<int:id>/avatar", methods=["POST", "GET", "DELETE"])
-def avatar(id: int):
+@app.route("/users/<int:user_id>/avatar", methods=["POST", "GET", "DELETE"])
+def avatar(user_id: int):
     """Upload or return an avatar for a single user based on the request type."""
     try:
         payload = verify_jwt()
     except AuthError:
         return {"Error": "Unauthorized"}, 401
 
-    user = fetch_user_by_id(id)
-
+    # If the user does not exist
+    user = fetch_user_by_id(user_id)
     if not user:
         return {"Error": "You don't have permission on this resource"}, 403
 
-    if request.method == "GET":
-        return get_avatar(id, payload, user)
-
-    if request.method == "POST":
-        return upload_avatar(id, payload, user)
-
-    if request.method == "DELETE":
-        return delete_avatar(id, payload, user)
-
-
-def get_avatar(payload, user):
-    """Return an avatar for a single user."""
-    # User can only access their own information
+    # User can only delete/access their own information
     if payload.get("sub", "") != user.get("sub", ""):
         return {"Error": "You don't have permission on this resource"}, 403
 
-    # If the user does not have an avatar
+    if request.method == "GET":
+        return get_avatar(user)
+
+    if request.method == "POST":
+        return upload_avatar(user_id, user)
+
+    if request.method == "DELETE":
+        return delete_avatar(user)
+
+
+def get_avatar(
+    user: dict[str, Any],
+) -> tuple[dict, int] | tuple[requests.Response, int]:
+    """Return an avatar for a single user."""
     if user.get("avatar_url", None) is None:
         return {"Error": "Not found"}, 404
-
     file = get_avatar_from_bucket(user.get("file_name", ""))
-
     return file, 200
 
 
@@ -351,20 +350,12 @@ def get_avatar_from_bucket(file_name: str):
     return send_file(file_obj, mimetype="image/png")
 
 
-def upload_avatar(id: int, payload, user) -> tuple[dict[str, str], int]:
+def upload_avatar(user_id: int, user: Entity) -> tuple[dict, int]:
     """Upload an avatar for a single user."""
-    # User can only access their own information
-    if payload.get("sub", "") != user.get("sub", ""):
-        return {"Error": "You don't have permission on this resource"}, 403
-
-    return upload_avatar_to_bucket(request, user, id)
-
-
-def upload_avatar_to_bucket(request, entity: Entity, id: int) -> tuple[dict, int]:
-    """Helper function to upload file to Google cloud bucket."""
     storage_client = storage.Client(project="assignment-6-tarpaulin-479819")
     bucket = storage_client.get_bucket(BUCKET)
 
+    # If no file was provided
     file_obj = request.files.get("file", None)
     if file_obj is None:
         return {"Error": "The request body is invalid"}, 400
@@ -373,27 +364,20 @@ def upload_avatar_to_bucket(request, entity: Entity, id: int) -> tuple[dict, int
     file_obj.seek(0)
     blob.upload_from_file(file_obj)
 
-    avatar_url = f"{GURL}/users/{str(id)}/avatar"
+    avatar_url = f"{GURL}/users/{str(user_id)}/avatar"
 
-    entity.update({"avatar_url": avatar_url, "file_name": file_obj.filename})
-    client.put(entity)
+    user.update({"avatar_url": avatar_url, "file_name": file_obj.filename})
+    client.put(user)
 
     return {"avatar_url": avatar_url}, 200
 
 
-def delete_avatar(payload, user) -> tuple[dict[str, str], int] | tuple[str, int]:
+def delete_avatar(user: Entity) -> tuple[dict, int] | tuple[str, int]:
     """Delete the avatar for a single user"""
-    # User can only delete their own information
-    if payload.get("sub", "") != user.get("sub", ""):
-        return {"Error": "You don't have permission on this resource"}, 403
-
-    # If the user does not have an avatar
     if user.get("avatar_url", None) is None:
         return {"Error": "Not found"}, 404
-
     delete_avatar_from_bucket(user.get("file_name", ""))
     remove_avatar_url(user)
-
     return "", 204
 
 
