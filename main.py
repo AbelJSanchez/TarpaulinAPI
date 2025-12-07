@@ -23,6 +23,7 @@ CLIENT_ID = os.getenv("CLIENT_ID")
 CLIENT_SECRET = os.getenv("CLIENT_SECRET")
 DOMAIN = os.getenv("DOMAIN")
 BUCKET = os.getenv("BUCKET")
+GURL = os.getenv("GURL")
 
 # Required Fields
 USER_FIELDS = ["username", "password"]
@@ -33,8 +34,6 @@ app = Flask(__name__)
 client = datastore.Client()
 
 oauth = OAuth(app)
-
-GURL = "http://127.0.0.1:8080"
 
 auth0 = oauth.register(
     "auth0",
@@ -593,7 +592,7 @@ def delete_student_enrollment(course_id: int) -> None:
 # ----------------------------------------------------------------------------
 
 
-@app.route("/courses/<int:course_id>/students", methods=["PUT", "GET"])
+@app.route("/courses/<int:course_id>/students", methods=["PATCH", "GET"])
 def course_students(course_id) -> None | tuple[dict[str, str], int] | tuple[list, int]:
     """
     Update the enrollment of student(s) or return all students for a single course
@@ -614,7 +613,7 @@ def course_students(course_id) -> None | tuple[dict[str, str], int] | tuple[list
     if not is_admin_or_instructor(payload, course.get("instructor_id", "")):
         return {"Error": "You don't have permission on this resource"}, 403
 
-    if request.method == "PUT":
+    if request.method == "PATCH":
         return update_enrollment(request, course_id)
 
     if request.method == "GET":
@@ -628,7 +627,7 @@ def is_admin_or_instructor(payload: dict[str, Any], user_id: str) -> bool:
     is_admin = verify_user_role(payload, "admin")
     instructor = fetch_user_by_sub(payload.get("sub", ""))
     is_instructor = True if int(instructor.key.id) == int(user_id) else False
-    return True if is_instructor or is_admin else False
+    return is_instructor or is_admin
 
 
 def update_enrollment(request, course_id: int):
@@ -700,7 +699,7 @@ def remove_students(
 
         query = client.query(kind="course_students")
         query.add_filter("student_id", "=", student)
-        query.add_filer("course_id", "=", course_id)
+        query.add_filter("course_id", "=", course_id)
         results = list(query.fetch())
         for r in results:
             client.delete(r.key)
