@@ -406,19 +406,24 @@ def remove_avatar_url(user: Entity) -> None:
 
 
 @app.route("/courses", methods=["POST", "GET"])
-def courses():
+def courses() -> tuple[dict, int] | None:
     """Create a course or return all courses depending on the request type."""
+    if request.method == "GET":
+        return get_all_courses()
+
     # Verify the JWT
     try:
         payload = verify_jwt()
     except AuthError:
         return {"Error": "Unauthorized"}, 401
 
-    if request.method == "POST":
-        return create_course()
+    # Only admin can create courses
+    is_admin = verify_user_role(payload, "admin")
+    if not is_admin:
+        return {"Error": "You don't have permission on this resource"}, 403
 
-    if request.method == "GET":
-        return get_all_courses()
+    if request.method == "POST":
+        return create_course(request)
 
     return None
 
@@ -428,16 +433,10 @@ def get_all_courses():
     pass
 
 
-def create_course() -> tuple[dict, int]:
+def create_course(request) -> tuple[dict, int]:
     """Create a single course."""
-    is_admin = verify_user_role(payload, "admin")
-
-    # Only admin can create courses
-    if not is_admin:
-        return {"Error": "You don't have permission on this resource"}, 403
-
+    # Ensure all required fields were provided
     content = request.get_json()
-
     valid_request = verify_request_body(content, COURSE_FIELDS)
     if not valid_request:
         return {"Error": "The request body is invalid"}, 400
@@ -452,7 +451,6 @@ def create_course() -> tuple[dict, int]:
         return {"Error": "The request body is invalid"}, 400
 
     course = create_course_in_datastore(content)
-
     return course, 201
 
 
@@ -478,22 +476,39 @@ def create_course_in_datastore(content: dict[str, Any]) -> dict[str, Any]:
     return new_course
 
 
-@app.route("/courses/<int:id>", methods=["GET", "PATCH", "DELETE"])
-def course_by_id(id: int):
+@app.route("/courses/<int:course_id>", methods=["GET", "PATCH", "DELETE"])
+def course_by_id(course_id: int) -> tuple[dict, int] | tuple[str, int] | None:
     """Return or update a single course depending on the request type"""
     if request.method == "GET":
-        return get_course(id)
+        return get_course(course_id)
+
+    # Verify the JWT
+    try:
+        payload = verify_jwt()
+    except AuthError:
+        return {"Error": "Unauthorized"}, 401
+
+    # If the course does not exist
+    if not fetch_course(course_id):
+        return {"Error": "You don't have permission on this resource"}, 403
+
+    # Only admins can update/delete courses
+    is_admin = verify_user_role(payload, "admin")
+    if not is_admin:
+        return {"Error": "You don't have permission on this resource"}, 403
 
     if request.method == "PATCH":
-        return update_course(id)
+        return update_course(course_id)
 
     if request.method == "DELETE":
-        return delete_course(id)
+        return delete_course(course_id)
+
+    return None
 
 
-def get_course(id: int) -> tuple[dict[str, Any], int]:
+def get_course(course_id: int) -> tuple[dict, int]:
     """Return a single course"""
-    course = fetch_course(id)
+    course = fetch_course(course_id)
     if not course:
         return {"Error": "Not found"}, 404
     course["id"] = course.key.id
@@ -501,23 +516,8 @@ def get_course(id: int) -> tuple[dict[str, Any], int]:
     return course, 200
 
 
-def update_course(id: int) -> tuple[dict[str, Any], int]:
+def update_course(course_id: int) -> tuple[dict, int]:
     """Update a single course"""
-    try:
-        payload = verify_jwt()
-    except AuthError:
-        return {"Error": "Unauthorized"}, 401
-
-    course = fetch_course(id)
-    if not course:
-        return {"Error": "You don't have permission on this resource"}, 403
-
-    is_admin = verify_user_role(payload, "admin")
-
-    # Only admins can update courses
-    if not is_admin:
-        return {"Error": "You don't have permission on this resource"}, 403
-
     content = request.get_json()
 
     # If the user tries to update a course with an instructor that does not exist
@@ -528,14 +528,16 @@ def update_course(id: int) -> tuple[dict[str, Any], int]:
         if instructor.get("role", "") != "instructor":
             return {"Error": "You don't have permission on this resource"}, 400
 
-    course = update_course_in_datastore(id, content)
+    course = update_course_in_datastore(course_id, content)
 
     return course, 200
 
 
-def update_course_in_datastore(id: int, content: dict[str, Any]) -> dict[str, Any]:
+def update_course_in_datastore(
+    course_id: int, content: dict[str, Any]
+) -> dict[str, Any]:
     """Update the course in Datastore."""
-    course = fetch_course(id)
+    course = fetch_course(course_id)
     for key, value in content.items():
         course[key] = value
     client.put(course)
@@ -544,9 +546,23 @@ def update_course_in_datastore(id: int, content: dict[str, Any]) -> dict[str, An
     return course
 
 
-def delete_course(id: int) -> tuple[dict[str, Any], int]:
+def delete_course(course_id: int) -> tuple[str, int]:
     """Delete a single course."""
-    pass
+    # Delete enrollment for students in course
+    students = query_students(course_id)
+    for student in students:
+        query = client.query(kind="course_students")
+        query.add_filter("student_id", "=", student.key.id)
+        query.add_filer("course_id", "=", course_id)
+        results = list(query.fetch())
+        for r in results:
+            client.delete(r.key)
+
+    # Delete the course
+    course = fetch_course(course_id)
+    client.delete(course.key)
+
+    return "", 204
 
 
 # ----------------------------------------------------------------------------
@@ -608,8 +624,8 @@ def update_enrollment(request, course_id: int):
     enrolled_students = {entity["student_id"] for entity in results}
 
     # Check if both lists are valid
-    add_list_valid = is_valid_list(students_to_add, enrolled_students)
-    remove_list_valid = is_valid_list(students_to_remove, enrolled_students)
+    add_list_valid = is_valid_list(students_to_add)
+    remove_list_valid = is_valid_list(students_to_remove)
 
     if add_list_valid and remove_list_valid:
         enroll_students(students_to_add, course_id, enrolled_students)
@@ -619,7 +635,7 @@ def update_enrollment(request, course_id: int):
     return {"Error": "Enrollment data is invalid"}, 409
 
 
-def is_valid_list(student_list: list[int], enrolled: set[Entity]):
+def is_valid_list(student_list: list[int]):
     for student in student_list:
         # If the user they are trying to add is not a student
         user = fetch_user_by_id(student)
@@ -650,7 +666,9 @@ def enroll_students(
         client.put(new_student)
 
 
-def remove_students(students_to_remove: list, course_id: int, enrolled: set[Entity]) -> None:
+def remove_students(
+    students_to_remove: list, course_id: int, enrolled: set[Entity]
+) -> None:
     """Remove all students in the list."""
     for student in students_to_remove:
         # If the student is not enrolled in the course, skip them
@@ -715,9 +733,9 @@ def verify_user_role(payload: dict[str, Any], role: str) -> bool:
         return False
 
 
-def fetch_user_by_id(id: int) -> Entity | None:
+def fetch_user_by_id(user_id: int) -> Entity | None:
     """Retrieve a user using their user ID."""
-    user_key = client.key("users", id)
+    user_key = client.key("users", user_id)
     user = client.get(key=user_key)
     user["id"] = user.key.id
     if not user:
@@ -745,9 +763,9 @@ def build_course_list(kind: str, filter_id: str, user_id: int) -> list[str]:
     return [f"{GURL}/courses/{course.get('id', '')}" for course in courses]
 
 
-def fetch_course(id: int) -> Entity | None:
+def fetch_course(course_id: int) -> Entity | None:
     """Retrieve a course by its ID."""
-    course_key = client.key("courses", id)
+    course_key = client.key("courses", course_id)
     course = client.get(key=course_key)
     if not course:
         return None
