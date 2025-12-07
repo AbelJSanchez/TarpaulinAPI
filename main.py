@@ -428,9 +428,31 @@ def courses() -> tuple[dict, int] | None:
     return None
 
 
-def get_all_courses():
+def get_all_courses() -> tuple[dict, int]:
     """Return all courses using pagination."""
-    pass
+    offset = int(request.args.get("offset", 0))
+    limit = int(request.args.get("limit", 3))
+
+    # Get the requested page of data
+    query = client.query(kind="courses")
+    query.order = ["subject"]
+    l_iterator = query.fetch(limit=limit, offset=offset)
+    pages = l_iterator.pages
+    results = list(next(pages))
+
+    # Create and return the response
+    course_list = create_course_list(results)
+    return {"courses": course_list, "next": f"{GURL}/courses?limit=3&offset=3"}, 200
+
+
+def create_course_list(courses: list[Entity]) -> list[dict]:
+    """"""
+    course_list = []
+    for course in courses:
+        course["id"] = (course.key.id,)
+        course["self"] = f"{GURL}/courses/{str(course.key.id)}"
+        course_list.append(course)
+    return course_list
 
 
 def create_course(request) -> tuple[dict, int]:
