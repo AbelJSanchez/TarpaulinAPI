@@ -549,6 +549,13 @@ def update_course_in_datastore(
 def delete_course(course_id: int) -> tuple[str, int]:
     """Delete a single course."""
     # Delete enrollment for students in course
+    delete_student_enrollment(course_id)
+    course = fetch_course(course_id)
+    client.delete(course.key)
+    return "", 204
+
+
+def delete_student_enrollment(course_id: int) -> None:
     students = query_students(course_id)
     for student in students:
         query = client.query(kind="course_students")
@@ -557,12 +564,6 @@ def delete_course(course_id: int) -> tuple[str, int]:
         results = list(query.fetch())
         for r in results:
             client.delete(r.key)
-
-    # Delete the course
-    course = fetch_course(course_id)
-    client.delete(course.key)
-
-    return "", 204
 
 
 # ----------------------------------------------------------------------------
